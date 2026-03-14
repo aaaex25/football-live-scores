@@ -17,20 +17,72 @@ const FOOTBALL_API_KEY = process.env.FOOTBALL_API_KEY;
 const API_BASE = "https://api.football-data.org/v4";
 const COLLECTION = "live_matches";
 
-// ─── Fetch Matches ────────────────────────────────────────────────────────────
+// ─── Free tier competitions ───────────────────────────────────────────────────
+// These are the competitions available on the free plan
+const FREE_COMPETITIONS = [
+  "PL",   // Premier League
+  "BL1",  // Bundesliga
+  "SA",   // Serie A
+  "PD",   // La Liga
+  "FL1",  // Ligue 1
+  "DED",  // Eredivisie
+  "PPL",  // Primeira Liga
+  "ELC",  // Championship
+  "CL",   // Champions League
+  "WC",   // World Cup
+  "EC",   // European Championship
+];
+
+// ─── Fetch Matches from one competition ───────────────────────────────────────
+async function fetchCompetitionMatches(competitionCode, today) {
+  try {
+    const response = await axios.get(
+      `${API_BASE}/competitions/${competitionCode}/matches`,
+      {
+        headers: { "X-Auth-Token": FOOTBALL_API_KEY },
+        params: {
+          dateFrom: today,
+          dateTo: today,
+        },
+        timeout: 10000,
+      }
+    );
+    const matches = response.data.matches || [];
+    console.log(`${competitionCode}: ${matches.length} matches`);
+    return matches;
+  } catch (err) {
+    // Skip competitions with no matches or access errors silently
+    if (err.response?.status === 404 || err.response?.status === 403) {
+      console.log(`${competitionCode}: skipped (${err.response.status})`);
+      return [];
+    }
+    console.warn(`${competitionCode}: error - ${err.message}`);
+    return [];
+  }
+}
+
+// ─── Fetch all competitions with a delay to avoid rate limiting ───────────────
 async function fetchMatches() {
   const today = new Date().toISOString().split("T")[0];
+  console.log(`Fetching matches for: ${today}`);
 
-  const response = await axios.get(`${API_BASE}/matches`, {
-    headers: { "X-Auth-Token": FOOTBALL_API_KEY },
-    params: {
-      dateFrom: today,
-      dateTo: today,
-    },
-    timeout: 10000,
-  });
+  const allMatches = [];
 
-  return response.data.matches || [];
+  for (const code of FREE_COMPETITIONS) {
+    const matches = await fetchCompetitionMatches(code, today);
+    allMatches.push(...matches);
+
+    // Wait 1 second between requests to respect rate limit (10 req/min free tier)
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+
+  // Remove duplicates by match ID
+  const unique = allMatches.filter(
+    (match, index, self) =>
+      index === self.findIndex((m) => m.id === match.id)
+  );
+
+  return unique;
 }
 
 // ─── Map API match to Firestore document ─────────────────────────────────────
@@ -58,7 +110,7 @@ function mapMatch(match) {
       away: match.score?.fullTime?.away ?? match.score?.halfTime?.away ?? null,
     },
 
-    status: match.status || "TIMED", // TIMED | IN_PLAY | PAUSED | FINISHED | POSTPONED | CANCELLED
+    status: match.status || "TIMED",
     minute: match.minute || null,
     utcDate: match.utcDate || null,
     lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
@@ -72,7 +124,6 @@ async function syncToFirestore(matches) {
     return;
   }
 
-  // Firestore batch limit is 500 ops
   const BATCH_SIZE = 499;
   let processed = 0;
 
@@ -98,7 +149,7 @@ async function main() {
 
   try {
     const matches = await fetchMatches();
-    console.log(`Fetched ${matches.length} matches from API`);
+    console.log(`Total fetched: ${matches.length} matches`);
 
     await syncToFirestore(matches);
     console.log("Sync complete ✓");
