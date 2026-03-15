@@ -18,7 +18,6 @@ const API_BASE = "https://api.football-data.org/v4";
 const COLLECTION = "live_matches";
 
 // ─── Free tier competitions ───────────────────────────────────────────────────
-// These are the competitions available on the free plan
 const FREE_COMPETITIONS = [
   "PL",   // Premier League
   "BL1",  // Bundesliga
@@ -33,17 +32,21 @@ const FREE_COMPETITIONS = [
   "EC",   // European Championship
 ];
 
-// ─── Fetch Matches from one competition ───────────────────────────────────────
-async function fetchCompetitionMatches(competitionCode, today) {
+// ─── Get date string ─────────────────────────────────────────────────────────
+function getDateString(offsetDays) {
+  const date = new Date();
+  date.setDate(date.getDate() + offsetDays);
+  return date.toISOString().split("T")[0];
+}
+
+// ─── Fetch Matches from one competition ──────────────────────────────────────
+async function fetchCompetitionMatches(competitionCode, dateFrom, dateTo) {
   try {
     const response = await axios.get(
       `${API_BASE}/competitions/${competitionCode}/matches`,
       {
         headers: { "X-Auth-Token": FOOTBALL_API_KEY },
-        params: {
-          dateFrom: today,
-          dateTo: today,
-        },
+        params: { dateFrom, dateTo },
         timeout: 10000,
       }
     );
@@ -51,7 +54,6 @@ async function fetchCompetitionMatches(competitionCode, today) {
     console.log(`${competitionCode}: ${matches.length} matches`);
     return matches;
   } catch (err) {
-    // Skip competitions with no matches or access errors silently
     if (err.response?.status === 404 || err.response?.status === 403) {
       console.log(`${competitionCode}: skipped (${err.response.status})`);
       return [];
@@ -61,18 +63,20 @@ async function fetchCompetitionMatches(competitionCode, today) {
   }
 }
 
-// ─── Fetch all competitions with a delay to avoid rate limiting ───────────────
+// ─── Fetch all competitions ───────────────────────────────────────────────────
 async function fetchMatches() {
-  const today = new Date().toISOString().split("T")[0];
-  console.log(`Fetching matches for: ${today}`);
+  const yesterday = getDateString(-1);
+  const tomorrow  = getDateString(+1);
+
+  console.log(`Fetching matches from ${yesterday} to ${tomorrow}`);
 
   const allMatches = [];
 
   for (const code of FREE_COMPETITIONS) {
-    const matches = await fetchCompetitionMatches(code, today);
+    const matches = await fetchCompetitionMatches(code, yesterday, tomorrow);
     allMatches.push(...matches);
 
-    // Wait 1 second between requests to respect rate limit (10 req/min free tier)
+    // 1 second delay to respect rate limit (10 req/min on free tier)
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
 
@@ -82,6 +86,7 @@ async function fetchMatches() {
       index === self.findIndex((m) => m.id === match.id)
   );
 
+  console.log(`Total unique matches: ${unique.length}`);
   return unique;
 }
 
@@ -120,7 +125,7 @@ function mapMatch(match) {
 // ─── Sync to Firestore (batch write) ─────────────────────────────────────────
 async function syncToFirestore(matches) {
   if (matches.length === 0) {
-    console.log("No matches found for today.");
+    console.log("No matches found.");
     return;
   }
 
@@ -149,8 +154,6 @@ async function main() {
 
   try {
     const matches = await fetchMatches();
-    console.log(`Total fetched: ${matches.length} matches`);
-
     await syncToFirestore(matches);
     console.log("Sync complete ✓");
   } catch (err) {
