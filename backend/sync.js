@@ -97,7 +97,7 @@ async function fetchFromFootballData() {
 // ─── Map football-data.org match → Firestore doc ──────────────────────────────
 function mapMatchFD(match) {
   return {
-    matchId:          `fd_${match.id}`,
+    matchId:          match.id,
     source:           "football-data",
     competition:      match.competition?.name || "Unknown",
     competitionEmblem: match.competition?.emblem || null,
@@ -211,7 +211,7 @@ function mapMatchAF(fixture) {
   };
 
   return {
-    matchId:          `af_${f.id}`,
+    matchId:          f.id,
     source:           "api-football",
     competition:      l.name  || "Unknown",
     competitionEmblem: l.logo || null,
