@@ -29,6 +29,7 @@ jobs:
         env:
           FOOTBALL_API_KEY: ${{ secrets.FOOTBALL_API_KEY }}
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }} 
         run: node sync.js
 
       - name: Report success
