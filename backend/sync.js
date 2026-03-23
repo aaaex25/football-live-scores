@@ -123,6 +123,7 @@ function mapMatchFD(match) {
     status:      match.status || "TIMED",
     minute:      match.minute || null,
     utcDate:     match.utcDate || null,
+    dateOnly:    match.utcDate ? match.utcDate.split("T")[0] : null, // e.g. "2026-03-23"
     lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
   };
 }
@@ -237,6 +238,7 @@ function mapMatchAF(fixture) {
     status:      statusMap[f.status?.short] || f.status?.short || "TIMED",
     minute:      f.status?.elapsed || null,
     utcDate:     f.date || null,
+    dateOnly:    f.date ? f.date.split("T")[0] : null, // e.g. "2026-03-23"
     lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
   };
 }
@@ -276,26 +278,36 @@ async function syncToFirestore(mappedMatches) {
 async function main() {
   console.log(`[${new Date().toISOString()}] Starting sync...`);
 
+  const today = getDateString(0);
+
   try {
-    // ── 1. Try football-data.org first ────────────────────────────────────────
+    // ── 1. Always fetch from football-data.org (yesterday + today + tomorrow) ─
     const fdMatches = await fetchFromFootballData();
 
     if (fdMatches.length > 0) {
-      console.log(`[primary] Using football-data.org (${fdMatches.length} matches)`);
+      console.log(`[primary] Syncing football-data.org (${fdMatches.length} matches)`);
       const mapped = fdMatches.map(mapMatchFD);
       await syncToFirestore(mapped);
+    }
 
-    } else {
-      // ── 2. Fallback to API-Football ─────────────────────────────────────────
-      console.log("[fallback] football-data.org returned 0 matches → trying API-Football...");
+    // ── 2. Check if TODAY specifically has matches from football-data.org ─────
+    const todayFD = fdMatches.filter((m) => m.utcDate && m.utcDate.startsWith(today));
+    console.log(`[primary] Today (${today}): ${todayFD.length} matches from football-data.org`);
+
+    if (todayFD.length === 0) {
+      // ── 3. Fallback to API-Football for today only ──────────────────────────
+      console.log(`[fallback] No matches today from football-data.org → trying API-Football...`);
       const afFixtures = await fetchFromApiFootball();
 
-      if (afFixtures.length > 0) {
-        console.log(`[fallback] Using API-Football (${afFixtures.length} fixtures)`);
-        const mapped = afFixtures.map(mapMatchAF);
+      const afToday = afFixtures.filter((f) => f.fixture?.date && f.fixture.date.startsWith(today));
+      console.log(`[fallback] API-Football today (${today}): ${afToday.length} fixtures`);
+
+      if (afToday.length > 0) {
+        console.log(`[fallback] Syncing ${afToday.length} fixtures from API-Football`);
+        const mapped = afToday.map(mapMatchAF);
         await syncToFirestore(mapped);
       } else {
-        console.log("Both sources returned 0 matches. Nothing to sync.");
+        console.log(`[fallback] API-Football also returned 0 matches for today.`);
       }
     }
 
