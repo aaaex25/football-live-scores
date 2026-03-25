@@ -1,37 +1,29 @@
 const admin = require("firebase-admin");
 const axios = require("axios");
 
-// ─── Firebase Init ────────────────────────────────────────────────────────────
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-
 if (!admin.apps.length) {
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
-  });
+  admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
 }
 
 const db = admin.firestore();
 
-// ─── Config ───────────────────────────────────────────────────────────────────
 const FOOTBALL_API_KEY = process.env.FOOTBALL_API_KEY;
 const NEWS_API_KEY     = process.env.NEWS_API_KEY;
 const API_BASE         = "https://api.football-data.org/v4";
 const MATCHES_COL      = "live_matches";
 const NEWS_COL         = "football_news";
 
-// ─── Free tier competitions ───────────────────────────────────────────────────
 const FREE_COMPETITIONS = [
   "PL", "BL1", "SA", "PD", "FL1", "DED", "PPL", "ELC", "CL", "WC", "EC",
 ];
 
-// ─── Get date string ──────────────────────────────────────────────────────────
 function getDateString(offsetDays) {
   const date = new Date();
   date.setDate(date.getDate() + offsetDays);
   return date.toISOString().split("T")[0];
 }
 
-// ─── Fetch matches from one competition ──────────────────────────────────────
 async function fetchCompetitionMatches(competitionCode, dateFrom, dateTo) {
   try {
     const response = await axios.get(
@@ -55,27 +47,25 @@ async function fetchCompetitionMatches(competitionCode, dateFrom, dateTo) {
   }
 }
 
-// ─── Fetch all competitions ───────────────────────────────────────────────────
 async function fetchMatches() {
-  const yesterday = getDateString(-3);
-  const tomorrow  = getDateString(+3);
-  console.log(`Fetching matches from ${yesterday} to ${tomorrow}`);
+  // ✅ Fix 1: Extend to 7 days back to always include past Sunday
+  const dateFrom = getDateString(-7);
+  const dateTo   = getDateString(+3);
+  console.log(`Fetching matches from ${dateFrom} to ${dateTo}`);
 
   const allMatches = [];
   for (const code of FREE_COMPETITIONS) {
-    const matches = await fetchCompetitionMatches(code, yesterday, tomorrow);
+    const matches = await fetchCompetitionMatches(code, dateFrom, dateTo);
     allMatches.push(...matches);
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
 
-  // Remove duplicates
   return allMatches.filter(
     (match, index, self) =>
       index === self.findIndex((m) => m.id === match.id)
   );
 }
 
-// ─── Map match to Firestore doc ───────────────────────────────────────────────
 function mapMatch(match) {
   return {
     matchId: match.id,
@@ -104,12 +94,8 @@ function mapMatch(match) {
   };
 }
 
-// ─── Sync matches to Firestore ────────────────────────────────────────────────
 async function syncMatches(matches) {
-  if (matches.length === 0) {
-    console.log("No matches found.");
-    return;
-  }
+  if (matches.length === 0) { console.log("No matches found."); return; }
   const BATCH_SIZE = 499;
   let processed = 0;
   for (let i = 0; i < matches.length; i += BATCH_SIZE) {
@@ -126,12 +112,12 @@ async function syncMatches(matches) {
   }
 }
 
-// ─── Fetch news from NewsAPI ──────────────────────────────────────────────────
 async function fetchNews() {
   try {
     const response = await axios.get("https://newsapi.org/v2/everything", {
       params: {
-        q: "football",
+        // ✅ Fix 2: Strict football-only query excluding other sports
+        q: '"football" OR "soccer" OR "Premier League" OR "Champions League" OR "La Liga" OR "Serie A" OR "Bundesliga" OR "Ligue 1" AND NOT (basketball OR tennis OR golf OR cricket OR rugby OR baseball OR F1 OR NASCAR)',
         language: "en",
         sortBy: "publishedAt",
         pageSize: 50,
@@ -141,7 +127,6 @@ async function fetchNews() {
     });
 
     const articles = response.data.articles || [];
-    // Filter out removed articles
     return articles.filter(
       (a) => a.title && a.title !== "[Removed]" && a.url
     );
@@ -151,17 +136,11 @@ async function fetchNews() {
   }
 }
 
-// ─── Sync news to Firestore ───────────────────────────────────────────────────
 async function syncNews(articles) {
-  if (articles.length === 0) {
-    console.log("No news articles.");
-    return;
-  }
+  if (articles.length === 0) { console.log("No news articles."); return; }
 
   const batch = db.batch();
-
   for (const article of articles) {
-    // Use URL hash as document ID to avoid duplicates
     const docId = Buffer.from(article.url).toString("base64").slice(0, 50);
     const docRef = db.collection(NEWS_COL).doc(docId);
     batch.set(docRef, {
@@ -179,16 +158,13 @@ async function syncNews(articles) {
   console.log(`News committed: ${articles.length} articles`);
 }
 
-// ─── Delete old news (keep only last 100 articles) ───────────────────────────
 async function cleanOldNews() {
   try {
     const snapshot = await db.collection(NEWS_COL)
       .orderBy("publishedAt", "desc")
       .offset(100)
       .get();
-
     if (snapshot.empty) return;
-
     const batch = db.batch();
     snapshot.docs.forEach((doc) => batch.delete(doc.ref));
     await batch.commit();
@@ -198,24 +174,18 @@ async function cleanOldNews() {
   }
 }
 
-// ─── Main ─────────────────────────────────────────────────────────────────────
 async function main() {
   console.log(`[${new Date().toISOString()}] Starting sync...`);
-
   try {
-    // Sync matches
     const matches = await fetchMatches();
     console.log(`Total matches: ${matches.length}`);
     await syncMatches(matches);
 
-    // Sync news
     const articles = await fetchNews();
     console.log(`Total articles: ${articles.length}`);
     await syncNews(articles);
 
-    // Clean old news
     await cleanOldNews();
-
     console.log("Sync complete ✓");
   } catch (err) {
     console.error("Sync failed:", err.message);
