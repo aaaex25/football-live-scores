@@ -14,32 +14,24 @@ const db = admin.firestore();
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 const FOOTBALL_API_KEY = process.env.FOOTBALL_API_KEY;
-const API_BASE = "https://api.football-data.org/v4";
-const COLLECTION = "live_matches";
+const NEWS_API_KEY     = process.env.NEWS_API_KEY;
+const API_BASE         = "https://api.football-data.org/v4";
+const MATCHES_COL      = "live_matches";
+const NEWS_COL         = "football_news";
 
 // ─── Free tier competitions ───────────────────────────────────────────────────
 const FREE_COMPETITIONS = [
-  "PL",   // Premier League
-  "BL1",  // Bundesliga
-  "SA",   // Serie A
-  "PD",   // La Liga
-  "FL1",  // Ligue 1
-  "DED",  // Eredivisie
-  "PPL",  // Primeira Liga
-  "ELC",  // Championship
-  "CL",   // Champions League
-  "WC",   // World Cup
-  "EC",   // European Championship
+  "PL", "BL1", "SA", "PD", "FL1", "DED", "PPL", "ELC", "CL", "WC", "EC",
 ];
 
-// ─── Get date string ─────────────────────────────────────────────────────────
+// ─── Get date string ──────────────────────────────────────────────────────────
 function getDateString(offsetDays) {
   const date = new Date();
   date.setDate(date.getDate() + offsetDays);
   return date.toISOString().split("T")[0];
 }
 
-// ─── Fetch Matches from one competition ──────────────────────────────────────
+// ─── Fetch matches from one competition ──────────────────────────────────────
 async function fetchCompetitionMatches(competitionCode, dateFrom, dateTo) {
   try {
     const response = await axios.get(
@@ -65,38 +57,30 @@ async function fetchCompetitionMatches(competitionCode, dateFrom, dateTo) {
 
 // ─── Fetch all competitions ───────────────────────────────────────────────────
 async function fetchMatches() {
-  const yesterday = getDateString(-1);
-  const tomorrow  = getDateString(+1);
-
+  const yesterday = getDateString(-3);
+  const tomorrow  = getDateString(+3);
   console.log(`Fetching matches from ${yesterday} to ${tomorrow}`);
 
   const allMatches = [];
-
   for (const code of FREE_COMPETITIONS) {
     const matches = await fetchCompetitionMatches(code, yesterday, tomorrow);
     allMatches.push(...matches);
-
-    // 1 second delay to respect rate limit (10 req/min on free tier)
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
 
-  // Remove duplicates by match ID
-  const unique = allMatches.filter(
+  // Remove duplicates
+  return allMatches.filter(
     (match, index, self) =>
       index === self.findIndex((m) => m.id === match.id)
   );
-
-  console.log(`Total unique matches: ${unique.length}`);
-  return unique;
 }
 
-// ─── Map API match to Firestore document ─────────────────────────────────────
+// ─── Map match to Firestore doc ───────────────────────────────────────────────
 function mapMatch(match) {
   return {
     matchId: match.id,
     competition: match.competition?.name || "Unknown",
     competitionEmblem: match.competition?.emblem || null,
-
     homeTeam: {
       id: match.homeTeam?.id || null,
       name: match.homeTeam?.name || "TBD",
@@ -109,12 +93,10 @@ function mapMatch(match) {
       shortName: match.awayTeam?.shortName || "TBD",
       crest: match.awayTeam?.crest || null,
     },
-
     score: {
       home: match.score?.fullTime?.home ?? match.score?.halfTime?.home ?? null,
       away: match.score?.fullTime?.away ?? match.score?.halfTime?.away ?? null,
     },
-
     status: match.status || "TIMED",
     minute: match.minute || null,
     utcDate: match.utcDate || null,
@@ -122,29 +104,97 @@ function mapMatch(match) {
   };
 }
 
-// ─── Sync to Firestore (batch write) ─────────────────────────────────────────
-async function syncToFirestore(matches) {
+// ─── Sync matches to Firestore ────────────────────────────────────────────────
+async function syncMatches(matches) {
   if (matches.length === 0) {
     console.log("No matches found.");
     return;
   }
-
   const BATCH_SIZE = 499;
   let processed = 0;
-
   for (let i = 0; i < matches.length; i += BATCH_SIZE) {
     const batch = db.batch();
     const chunk = matches.slice(i, i + BATCH_SIZE);
-
     for (const match of chunk) {
       const mapped = mapMatch(match);
-      const docRef = db.collection(COLLECTION).doc(String(mapped.matchId));
+      const docRef = db.collection(MATCHES_COL).doc(String(mapped.matchId));
       batch.set(docRef, mapped, { merge: true });
     }
-
     await batch.commit();
     processed += chunk.length;
-    console.log(`Committed batch: ${processed}/${matches.length} matches`);
+    console.log(`Matches committed: ${processed}/${matches.length}`);
+  }
+}
+
+// ─── Fetch news from NewsAPI ──────────────────────────────────────────────────
+async function fetchNews() {
+  try {
+    const response = await axios.get("https://newsapi.org/v2/everything", {
+      params: {
+        q: "football",
+        language: "en",
+        sortBy: "publishedAt",
+        pageSize: 50,
+        apiKey: NEWS_API_KEY,
+      },
+      timeout: 10000,
+    });
+
+    const articles = response.data.articles || [];
+    // Filter out removed articles
+    return articles.filter(
+      (a) => a.title && a.title !== "[Removed]" && a.url
+    );
+  } catch (err) {
+    console.warn("News fetch failed:", err.message);
+    return [];
+  }
+}
+
+// ─── Sync news to Firestore ───────────────────────────────────────────────────
+async function syncNews(articles) {
+  if (articles.length === 0) {
+    console.log("No news articles.");
+    return;
+  }
+
+  const batch = db.batch();
+
+  for (const article of articles) {
+    // Use URL hash as document ID to avoid duplicates
+    const docId = Buffer.from(article.url).toString("base64").slice(0, 50);
+    const docRef = db.collection(NEWS_COL).doc(docId);
+    batch.set(docRef, {
+      title:       article.title || "",
+      description: article.description || "",
+      urlToImage:  article.urlToImage || null,
+      url:         article.url || "",
+      publishedAt: article.publishedAt || "",
+      sourceName:  article.source?.name || "Unknown",
+      syncedAt:    admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+  }
+
+  await batch.commit();
+  console.log(`News committed: ${articles.length} articles`);
+}
+
+// ─── Delete old news (keep only last 100 articles) ───────────────────────────
+async function cleanOldNews() {
+  try {
+    const snapshot = await db.collection(NEWS_COL)
+      .orderBy("publishedAt", "desc")
+      .offset(100)
+      .get();
+
+    if (snapshot.empty) return;
+
+    const batch = db.batch();
+    snapshot.docs.forEach((doc) => batch.delete(doc.ref));
+    await batch.commit();
+    console.log(`Deleted ${snapshot.docs.length} old articles`);
+  } catch (err) {
+    console.warn("Cleanup failed:", err.message);
   }
 }
 
@@ -153,14 +203,22 @@ async function main() {
   console.log(`[${new Date().toISOString()}] Starting sync...`);
 
   try {
+    // Sync matches
     const matches = await fetchMatches();
-    await syncToFirestore(matches);
+    console.log(`Total matches: ${matches.length}`);
+    await syncMatches(matches);
+
+    // Sync news
+    const articles = await fetchNews();
+    console.log(`Total articles: ${articles.length}`);
+    await syncNews(articles);
+
+    // Clean old news
+    await cleanOldNews();
+
     console.log("Sync complete ✓");
   } catch (err) {
     console.error("Sync failed:", err.message);
-    if (err.response) {
-      console.error("API Response:", err.response.status, err.response.data);
-    }
     process.exit(1);
   }
 }
