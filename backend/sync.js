@@ -117,7 +117,7 @@ async function fetchNews() {
     const response = await axios.get("https://newsapi.org/v2/everything", {
       params: {
         // ✅ Fix 2: Strict football-only query excluding other sports
-        q: '("football" OR "soccer" OR "Premier League" OR "Champions League" OR "La Liga" OR "Serie A" OR "Bundesliga" OR "Ligue 1") AND NOT (basketball OR tennis OR golf OR cricket OR rugby OR baseball OR "Formula 1" OR NASCAR)',
+        q: '("Premier League" OR "La Liga" OR "Serie A" OR "Bundesliga" OR "Ligue 1" OR "Champions League" OR "Europa League" OR "UEFA") AND (football OR soccer) AND NOT (basketball OR tennis OR golf OR cricket OR rugby OR baseball OR "American football" OR NFL)',
         language: "en",
         sortBy: "publishedAt",
         pageSize: 50,
