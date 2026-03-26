@@ -48,7 +48,7 @@ async function fetchCompetitionMatches(competitionCode, dateFrom, dateTo) {
 }
 
 async function fetchMatches() {
-  const dateFrom = getDateString(-1);
+  const dateFrom = getDateString(-7);
   const dateTo   = getDateString(+1);
   console.log(`Fetching matches from ${dateFrom} to ${dateTo}`);
 
