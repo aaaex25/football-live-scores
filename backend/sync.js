@@ -48,9 +48,8 @@ async function fetchCompetitionMatches(competitionCode, dateFrom, dateTo) {
 }
 
 async function fetchMatches() {
-  // ✅ Fix 1: Extend to 7 days back to always include past Sunday
-  const dateFrom = getDateString(-7);
-  const dateTo   = getDateString(+3);
+  const dateFrom = getDateString(-1);
+  const dateTo   = getDateString(+1);
   console.log(`Fetching matches from ${dateFrom} to ${dateTo}`);
 
   const allMatches = [];
