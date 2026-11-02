@@ -18,6 +18,9 @@ const FREE_COMPETITIONS = [
   "PL", "BL1", "SA", "PD", "FL1", "DED", "PPL", "ELC", "CL", "WC", "EC",
 ];
 
+// [جديد] حالات المباراة المباشرة
+const LIVE_STATUSES = ["IN_PLAY", "PAUSED", "LIVE"];
+
 function getDateString(offsetDays) {
   const date = new Date();
   date.setDate(date.getDate() + offsetDays);
@@ -78,7 +81,27 @@ function dedupe(matches) {
   );
 }
 
+// [جديد] تحديد مجموعة المباراة وأولوية العرض
+function getGroup(match) {
+  const todayStr = getDateString(0);
+  const matchDay = match.utcDate ? match.utcDate.substring(0, 10) : null;
+
+  // 1) مباشرة (لها الأولوية حتى لو بدأت أمس)
+  if (LIVE_STATUSES.includes(match.status)) return { group: "live", priority: 0 };
+
+  // 2) مباريات اليوم (منتهية أو لم تبدأ)
+  if (matchDay === todayStr) return { group: "today", priority: 1 };
+
+  // 3) قادمة
+  if (match.utcDate && new Date(match.utcDate) > new Date())
+    return { group: "upcoming", priority: 2 };
+
+  // 4) منتهية في أيام سابقة
+  return { group: "finished", priority: 3 };
+}
+
 function mapMatch(match) {
+  const { group, priority } = getGroup(match); // [جديد]
   return {
     matchId:           match.id,
     competition:       match.competition?.name || "Unknown",
@@ -103,6 +126,8 @@ function mapMatch(match) {
     minute:      match.minute || null,
     utcDate:     match.utcDate || null,
     dateOnly:    match.utcDate ? match.utcDate.substring(0, 10) : null,
+    group,       // [جديد] "live" | "today" | "upcoming" | "finished"
+    priority,    // [جديد] 0 | 1 | 2 | 3
     lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
   };
 }
